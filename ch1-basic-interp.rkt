@@ -2,27 +2,12 @@
 
 ;; Date: 2015-02-28
 ;; Author: Lyruse Huang
+;; notice the update.1! which is a hardbone.
+;;
+(require mzlib/compat) ;; to use atom? and getprop
 
-(define atom?
-  (lambda (exp)
-    (not (pair? exp))))
 
-(define eprogn
-  (lambda (exps env)
-    (if (pair? exps)
-        (if (pair? (cdr exps))
-            (begin (evaluate (car exps) env)
-                   (eprogn (cdr exps) env))
-            (evaluate (car exps) env))
-        empty-begin)))
-(define empty-begin 813)
 
-(define evlis
-  (lambda (exps env)
-    (if (pair? exps)
-        (cons (evaluate (car exps) env)
-              (evlis (cdr exps) env))
-        '())))
 (define mcaar (lambda (ls) (mcar (mcar ls))))
 (define mcdar (lambda (ls) (mcdr (mcar ls))))
 (define env.init '())
@@ -65,7 +50,40 @@
   (lambda (vars body env) ;; lexical binding
     (lambda (values)
       (eprogn body (extend env vars values)))))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;add some global environment utilities;;;;;;;;;;;;;;;;
+(define env.global env.init)
+(define-syntax definitial
+  (syntax-rules ()
+    [(_ name)
+     (begin (set! env.global (mcons (mcons 'name 'void) env.global))
+            (void))]
+    [(_ name value)
+     (begin (set! env.global (mcons (mcons 'name value) env.global)))]))
+(define-syntax defprimitive
+  (syntax-rules ()
+    [(_ name value arity)
+     (definitial name
+       (lambda (values)
+         (if (= arity (length values))
+             (apply value values)
+             (error "Incorrect arity ~s" (list 'name values)))))]))
+(define eprogn
+  (lambda (exps env)
+    (if (pair? exps)
+        (if (pair? (cdr exps))
+            (begin (evaluate (car exps) env)
+                   (eprogn (cdr exps) env))
+            (evaluate (car exps) env))
+        empty-begin)))
+(define empty-begin 813)
 
+(define evlis
+  (lambda (exps env)
+    (if (pair? exps)
+        (cons (evaluate (car exps) env)
+              (evlis (cdr exps) env))
+        '())))
 (define (evaluate e env)
   (if (atom? e)
       (cond
@@ -84,3 +102,179 @@
         [(lambda) (make-function (cadr e) (cddr e) env)]
         [else (invoke (evaluate (car e) env)
                       (evlis (cdr e) env))])))
+
+
+;;; add some global variables and function
+(defprimitive cons cons 2)
+(defprimitive car car 1)
+(defprimitive + + 2)
+(defprimitive eq? eq? 2)
+(defprimitive * * 2)
+(defprimitive - - 2)
+(definitial list (lambda (id) id))  ;; Exercise 1.6
+
+;; for testing
+(define (chapter1-scheme eval)
+  (define (toplevel)
+    (display (eval (read) env.global))
+    (toplevel))
+  (toplevel))
+
+
+#;(((lambda (f)
+     ((lambda (mk)
+       (f (lambda (x) ((mk mk) x))))
+      (lambda (mk)
+        (f (lambda (x) ((mk mk) x))))))
+   (lambda (f)
+     (lambda (n)
+       (if (eq? 0 n)
+           1
+           (* n (f (- n 1)))))))
+   5)
+;==> 120
+;; Exercise 1.1
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; add a tracer ;;;;;;;;;;;;;;;;;;;;;;;;;;
+(define *tracer* #f)
+(define set-tracer! (lambda (val) (set! *tracer* val)))
+(define Exer1.1      ;; this is not a good one, It didn't print the name of fun
+  (lambda (result fn args)
+    (if (eq? #t *tracer*)
+        (begin (display (format "function ~s takes ~s as args,
+and produce ~s as result.\n"
+                         fn args result))
+               result)
+        result)))
+;; here is a better version of Exer1.1
+(define tracing.eprogn
+  (lambda (exps env)
+    (if (pair? exps)
+        (if (pair? (cdr exps))
+            (begin (tracing.evaluate (car exps) env)
+                   (tracing.eprogn (cdr exps) env))
+            (tracing.evaluate (car exps) env))
+        empty-begin)))
+
+(define tracing.evlis
+  (lambda (exps env)
+    (if (pair? exps)
+        (cons (tracing.evaluate (car exps) env)
+              (tracing.evlis (cdr exps) env))
+        '())))
+(define (tracing.evaluate e env)
+  (if (atom? e)
+      (cond
+        [(symbol? e) 
+         (lookup e env)]
+        [(or (number? e) (string? e)
+             (char? e) (boolean? e))e]
+        [else (error "Can't evaluate ~s" e)])
+      (case (car e)
+        [(quote) (cadr e)]
+        [(if) (if (tracing.evaluate (cadr e) env)
+                  (tracing.evaluate (caddr e) env)
+                  (tracing.evaluate (cadddr e) env))]
+        [(begin) (eprogn (cdr e) env)]
+        [(set!) (update! (cadr e) env (tracing.evaluate (caddr e) env))]
+        [(lambda) (make-function (cadr e) (cddr e) env)]
+        [else (let ([fn (tracing.evaluate (car e) env)]
+                    [arguments (tracing.evlis (cdr e) env)])
+                (display `(calling ,(car e) with . ,arguments))
+                (let ([result (invoke fn arguments)])
+                  (newline)
+                  (display `(returning from ,(car e) with ,result))
+                  (newline)
+                  result))])))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Exercise 1.2
+(define Exer1.2-evlis
+  (lambda (exps env)
+    (if (pair? exps)
+        (cons (evaluate (car exps) env)
+              (if (null? (cdr exps))
+                  '()
+                  (Exer1.2-evlis (cdr exps) env)))
+        '())))
+
+;; the better version from the book's answer
+(define ans.evlis
+  (lambda (exps env)
+    (define (evlis exps)
+      (if (pair? (cdr exps))
+          (cons (evaluate (car exps) env)
+                (evlis (cdr exps)))
+          (list (evaluate (car exps) env))))
+    (if (pair? (exps))
+        (evlis exps)
+        '())))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Exercise 1.3
+(define extend.1
+  (lambda (env vars values)
+    (mcons (mcons vars values) env)))
+; Symbol Environment -> value
+(define lookup.1
+  (lambda (id env)
+    (define inner
+      (lambda (id vars vals)
+        (cond
+          [(mpair? vars)
+           (if (mpair? vals)
+               (if (eq? id (mcar vars))
+                   (mcar vals)
+                   (inner id (mcdr vars) (mcdr vals)))
+               (error "Too less values"))]
+          [(null? vars)
+           (if (null? vals)
+               'not-found        ;; it seems this value is not nessesary
+               (error "Too much values"))]
+          [(symbol? vars)
+           (if (eq? id vars)
+               vals
+               'not-found)])))
+    (if (mpair? env)
+        (let ([rv (inner id (mcaar env) (mcdar env))])
+          (if (eq? rv 'not-found)
+              (lookup.1 id (mcdr env))
+              rv))
+        (error "No such binding for ~s" id))))
+(define update.1!  ;; this is a hardbone. got tested.
+  (lambda (id env val)
+    (if (mpair? env)
+        (let look ([vars (mcaar env)]
+                   [vals (mcdar env)]
+                   [cell (mcar env)])
+          (cond
+            [(symbol? vars)
+             (if (eq? id vars)
+                 (set-mcdr! cell val)
+                 (update.1! id (cdr env) val))]
+            [(null? vars) (update.1! id (cdr env) val)]
+            [(eq? (mcar vars) id)
+             (if (mpair? vals)
+                 (set-mcar! (mcdr cell) val)
+                 (error "Too less values ~s" vals))]
+            [else (if (mpair? vals)
+                      (look (mcdr vars)
+                            (mcdr vals)
+                            (if (mpair? (mcdr vals))
+                                (mcdr cell)
+                                cell))
+                      (error "Too less values"))]))
+        (error "No such binding ~s" id))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Exercise 1.7
+;; write a call/cc
+(defprimitive call/cc
+  (lambda (f)
+    (call/cc (lambda (g)
+               (invoke f
+                       (list (lambda (values)
+                               (if (= 1 (length values))
+                                   (g (car values))
+                                   (error "Wrong arity." g))))))))
+  1)
