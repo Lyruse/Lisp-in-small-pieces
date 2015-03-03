@@ -1,11 +1,13 @@
 #lang racket
 
-;; Date: 2015-03-02
+;; Date: 2015-03-03
 ;; Author: Lyruse Huang
-;; About Lisp2: separate var world and function world
+;; About Lisp3: separate var world and function world, dynamic vars
 ;; and to improve the way function calls were handled 
-(require mzlib/compat) ;; to use atom? and getprop
 
+;; display-cyclic-spine is a good example about cyclic list data
+
+(require mzlib/compat) ;; to use atom? and getprop
 
 
 (define mcaar (lambda (ls) (mcar (mcar ls))))
@@ -42,14 +44,14 @@
         (error "No such biding for " id))))
 
 (define invoke
-  (lambda (fn args)
+  (lambda (fn args denv)
     (if (procedure? fn)  ;; use the definition language's closure
-        (fn args)
+        (fn args denv)
         (error "Not a function: " fn))))
 (define make-function
   (lambda (vars body env fenv) ;; lexical binding
-    (lambda (values)
-      (eprogn body (extend env vars values) fenv))))
+    (lambda (values denv)
+      (eprogn body (extend env vars values) fenv denv))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -74,29 +76,29 @@
   (syntax-rules ()
     [(_ name value arity)
      (definitial-function name
-       (lambda (values)
+       (lambda (values denv)
          (if (= arity (length values))
              (apply value values)
              (error "Incorrect arity " (list 'name values)))))]))
 
 
 (define eprogn
-  (lambda (exps env fenv)
+  (lambda (exps env fenv denv)
     (if (pair? exps)
         (if (pair? (cdr exps))
-            (begin (evaluate (car exps) env fenv)
-                   (eprogn (cdr exps) env fenv))
-            (evaluate (car exps) env fenv))
+            (begin (evaluate (car exps) env fenv denv)
+                   (eprogn (cdr exps) env fenv denv))
+            (evaluate (car exps) env fenv denv))
         empty-begin)))
 (define empty-begin 813)
 
 (define evlis
-  (lambda (exps env fenv)
+  (lambda (exps env fenv denv)
     (if (pair? exps)
-        (cons (evaluate (car exps) env fenv)
-              (evlis (cdr exps) env fenv))
+        (cons (evaluate (car exps) env fenv denv)
+              (evlis (cdr exps) env fenv denv))
         '())))
-(define (evaluate e env fenv)
+(define (evaluate e env fenv denv)
   (if (atom? e)
       (cond
         [(symbol? e) 
@@ -106,9 +108,9 @@
         [else (error "Can't evaluate " e)])
       (case (car e)
         [(quote) (cadr e)]
-        [(if) (if (evaluate (cadr e) env fenv)
-                  (evaluate (caddr e) env fenv)
-                  (evaluate (cadddr e) env fenv))]
+        [(if) (if (evaluate (cadr e) env fenv denv)
+                  (evaluate (caddr e) env fenv denv)
+                  (evaluate (cadddr e) env fenv denv))]
         [(function)
          (cond [(symbol? (cadr e))
                 (f.lookup (cadr e) fenv)]
@@ -116,61 +118,51 @@
                 (make-function
                  (cadr (cadr e)) (cddr (cadr e)) env fenv)]
                [else (error "Incorrect function " (cadr e))])]
-        [(begin) (eprogn (cdr e) env fenv)]
-        [(set!) (update! (cadr e) env (evaluate (caddr e) env fenv))]
+        [(begin) (eprogn (cdr e) env fenv denv)]
+        [(set!) (update! (cadr e) env (evaluate (caddr e) env fenv denv))]
         [(lambda) (make-function (cadr e) (cddr e) env fenv)]
-        [(labels)  ;; like letrec, can have mutual recursion
-         (let ([new-fenv (extend fenv
-                                 (map car (cadr e))
-                                 (map (lambda (def) 'void) (cadr e)))])
-           (for-each (lambda (def)
-                       (update! (car def)
-                                new-fenv
-                                (make-function
-                                 (cadr def) (cddr def)
-                                 env new-fenv)))
-                     (cadr e))
-           (eprogn (cddr e) env new-fenv))]
-        [(flet)  ;; just let, can't have mutual recursion
-         (eprogn
-          (cddr e)
-          env
-          (extend fenv
-                  (map car (cadr e))
-                  (map (lambda (def)
-                         (make-function (cadr def) (cddr def) env fenv))
-                       (cadr e))))]
+        [(let) (eprogn (cddr e)
+                       (extend env (map car (cadr e))
+                               (map (lambda (e) (evaluate e env fenv denv)) (map cadr (cadr e))))
+                       fenv
+                       denv)]
+        [(dynamic) (lookup (cadr e) denv)]
+        [(dynamic-set!)
+         (update! (cadr e)
+                  denv
+                  (evaluate (caddr e) env fenv denv))]
+        [(dynamic-let)
+         (eprogn (cddr e)
+                 env
+                 fenv
+                 (extend denv
+                         (map car (cadr e))
+                         (map (lambda (e)
+                                (evaluate e env fenv denv))
+                              (map cadr (cadr e)))))]
         [else (evaluate.app (car e)
-                      (evlis (cdr e) env fenv)
+                      (evlis (cdr e) env fenv denv)
                       env
-                      fenv)])))
+                      fenv
+                      denv)])))
 (define f.lookup
   (lambda (id env)
-    (if (pair? env)
-        (if (eq? (caar env) id)
-            (cdar env)
-            (f.lookup id (cdr env)))
-        (lambda (values)
+    (if (mpair? env)
+        (if (eq? (mcaar env) id)
+            (mcdar env)
+            (f.lookup id (mcdr env)))
+        (lambda (values denv) ;; returns a function when not found the corresponding fun
           (error "No such functional binding" id)))))
 (define evaluate.app
-  (lambda (fn args env fenv)
+  (lambda (fn args env fenv denv)
     (cond
       [(symbol? fn)
-       (invoke (lookup fn fenv) args)]
-      #;
-      [(number? fn)  ;; not a good innovation
-       (cond
-         [(= 1 fn)
-          (car (car args))]
-         [(= -1 fn)
-          (cdr (car args))]
-         [(> fn 0)
-          (evaluate.app (- fn 1) (list (cdr (car args))) env fenv)]
-         [else (evaluate.app (+ fn 1) (list (cdr (car args))) env fenv)])]
+       ((f.lookup fn fenv) args denv)]     
       [(and (pair? fn) (eq? (car fn) 'lambda))
        (eprogn (cddr fn)
                (extend env (cadr fn) args)
-               fenv)]
+               fenv
+               denv)]
       [else (error "Incorrect functional term " fn)])))
 
 
@@ -195,7 +187,7 @@
     (toplevel))
   (toplevel))
 (define (test exp)
-  (evaluate exp env.global fenv.global))
+  (evaluate exp env.global fenv.global env.init))
 
 #;(funcall
    ((lambda (f)
@@ -219,3 +211,35 @@
 ;==>
 ;> (test '((lambda (list) (list list)) '(1 2 3 4)))
 ;(list (list 1 2 3 4))
+
+#;
+(test '((lambda (t) (dynamic-let ([t 50])
+                                   (+ (dynamic t) t ))) 100))
+;; ==> 150
+
+(define (display-cyclic-spine list)
+  (define (scan l1 l2 flip)
+    (cond
+      [(not (mpair? l1)) (unless (null? l1) (display " . ") (display l1))
+                  (display ")")]
+      [(eq? l1 l2) (display "...)")]
+      [else (display (mcar l1))
+            (when (mpair? (mcdr l1))
+              (display " ")
+              (scan (mcdr l1)
+                    (if (and flip (mpair? l2)) (mcdr l2) l2)
+                    (not flip)))]))
+  (display "(")
+  (scan list (mcons 123 list) #f))
+;> (display-cyclic-spine
+;   (let ([l (mcons 1 (mcons 2 (mcons 3 (mcons 4 '()))))])
+;     (set-mcdr! (mcdr (mcdr (mcdr l))) l)
+;     l))
+; (1 2 3 4 1 ...)
+
+; mpair is a atom!!!!!!!!!!!!!!!!!!!!!
+#; ;=> (1 2 3 4 1 ...)
+(display-cyclic-spine
+   (let ([l (mcons 1 (mcons 2 (mcons 3 (mcons 4 '()))))])
+     (set-mcdr! (mcdr (mcdr (mcdr l))) l)
+     l))
