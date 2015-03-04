@@ -146,10 +146,10 @@
                       fenv)])))
 (define f.lookup
   (lambda (id env)
-    (if (pair? env)
-        (if (eq? (caar env) id)
-            (cdar env)
-            (f.lookup id (cdr env)))
+    (if (mpair? env)
+        (if (eq? (mcaar env) id)
+            (mcdar env)
+            (f.lookup id (mcdr env)))
         (lambda (values)
           (error "No such functional binding" id)))))
 (define evaluate.app
@@ -157,16 +157,6 @@
     (cond
       [(symbol? fn)
        (invoke (lookup fn fenv) args)]
-      #;
-      [(number? fn)  ;; not a good innovation
-       (cond
-         [(= 1 fn)
-          (car (car args))]
-         [(= -1 fn)
-          (cdr (car args))]
-         [(> fn 0)
-          (evaluate.app (- fn 1) (list (cdr (car args))) env fenv)]
-         [else (evaluate.app (+ fn 1) (list (cdr (car args))) env fenv)])]
       [(and (pair? fn) (eq? (car fn) 'lambda))
        (eprogn (cddr fn)
                (extend env (cadr fn) args)
@@ -200,7 +190,7 @@
 #;(funcall
    ((lambda (f)
      ((lambda (mk)
-       (f (lambda (x) (funcall (funcall mk mk) x))))
+       (funcall f (lambda (x) (funcall (funcall mk mk) x))))
       (lambda (mk)
         (funcall f (lambda (x) (funcall (funcall mk mk) x))))))
    (lambda (f)
