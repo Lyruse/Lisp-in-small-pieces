@@ -9,7 +9,8 @@
 
 (require mzlib/compat) ;; to use atom? and getprop
 (require compatibility/mlist)
-
+(provide set-assoc/de! get-x set-x!
+ (rename-out [test cl-de-test]))
 
 (define mcaar (lambda (ls) (mcar (mcar ls))))
 (define mcdar (lambda (ls) (mcdr (mcar ls))))
@@ -57,7 +58,7 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;add some global environment utilities;;;;;;;;;;;;;;;;
-(define env.global env.init)
+(define env.global '())
 (define denv.global '())
 
 (define-syntax definitial
@@ -137,6 +138,7 @@
 (defprimitive car car 1)
 (defprimitive + + 2)
 (defprimitive eq? eq? 2)
+(defprimitive eqv? eqv? 2)
 (defprimitive * * 2)
 (defprimitive - - 2)
 (defprimitive = = 2)
@@ -165,11 +167,27 @@
        (let look ([denv current.denv])
          (match denv
            [(mcons a d)
-            (if (eqv? tag (mcar a))
+            (if (eq? tag (mcar a))
                 (mcdr a)
                 (look d))]
            [else (invoke def (list tag) current.denv)]))]
       [else (error "incorrect arity" 'assoc/de)])))
+(definitial assoc/de1
+  (lambda (values current.denv)
+    (match values
+      [`(,tag ,compare ,def)
+       (let look ([denv current.denv])
+         (match denv
+           [(mcons a d)
+            (if (compare `(,tag ,(mcar a)) denv)
+                (mcdr a)
+                (look d))]
+           [else (invoke def (list tag) current.denv)]))]
+      [else (error "incorrect arity" 'assoc/de)])))
+(define-syntax set-assoc/de!
+  (syntax-rules ()
+                [(_ fun)
+                 (definitial assoc/de fun)]))
 
 ;; for testing
 (define (Lisp)
@@ -198,3 +216,7 @@
                                    (let ([x (+ (assoc/de 'x error) (assoc/de 'x error))])
                                      (+ x (assoc/de 'x (lambda () 5))))))))))))
 ;; =>400
+
+(define xxx '(1 2 3))
+(define get-x (lambda () xxx))
+(define set-x! (lambda (x) (set! xxx (cons x xxx))))

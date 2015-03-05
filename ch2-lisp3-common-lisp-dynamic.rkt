@@ -9,6 +9,7 @@
 
 (require mzlib/compat) ;; to use atom? and getprop
 (require compatibility/mlist)
+(provide (rename-out [test cl-dynamic-test]))
 
 
 (define mcaar (lambda (ls) (mcar (mcar ls))))
@@ -124,7 +125,8 @@
         [(lambda) (make-function (cadr e) (cddr e) env fenv)]
         [(let) (eprogn (cddr e)
                        (extend env (map car (cadr e))
-                               (map (lambda (e) (evaluate e env fenv denv)) (map cadr (cadr e))))
+                               (map (lambda (e) (evaluate e env fenv denv)) 
+                                    (map cadr (cadr e))))
                        fenv
                        denv)]
         [(dynamic) (lookup (cadr e) denv)]

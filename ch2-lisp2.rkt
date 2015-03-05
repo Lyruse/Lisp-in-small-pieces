@@ -5,7 +5,7 @@
 ;; About Lisp2: separate var world and function world
 ;; and to improve the way function calls were handled 
 (require mzlib/compat) ;; to use atom? and getprop
-
+(provide (rename-out [test lisp2-test]))
 
 
 (define mcaar (lambda (ls) (mcar (mcar ls))))
@@ -171,6 +171,7 @@
 (defprimitive eq? eq? 2)
 (defprimitive * * 2)
 (defprimitive - - 2)
+(defprimitive = = 2)
 (definitial-function list (lambda (id) id))  ;; Exercise 1.6
 (definitial-function funcall
   (lambda (args)
