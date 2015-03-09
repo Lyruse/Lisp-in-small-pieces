@@ -12,6 +12,8 @@
         [(begin) (evaluate-begin (cdr e) r k)]
         [(set!) (evaluate-set! (cadr e) (caddr e) r k)]
         [(lambda) (evaluate-lambda (cadr e) (cddr e) r k)]
+        [(catch) (evaluate-catch (cadr e) (cddr e) r k)]
+        [(throw) (evaluate-throw (cadr e) (caddr e) r k)]
         [else (evaluate-application (car e) (cdr e) r k)])))
 (define invoke
   (lambda (f v* r k)
@@ -52,13 +54,37 @@
       [(gather-cont%? k)
        (resume (continuation%-k k)
                (cons (gather-cont%-v k) v))]
+      [(catch-cont%? k)
+       (evaluate-begin (catch-cont%-body k)
+                       (catch-cont%-r k)
+                       (labeled-cont% (continuation%-k k) v))]
+      [(throwing-cont%? k)
+       (resume (throwing-cont%-cont k) v)]
       [(apply-cont%? k)
        (invoke (apply-cont%-f k)
                v
                (apply-cont%-r k)
                (continuation%-k k))]
       [(bottom-cont%? k)
-       ((bottom-cont%-f k) v)])))
+       ((bottom-cont%-f k) v)]
+      [(throw-cont%? k)
+       (catch-lookup k v k)]
+      [(labeled-cont%? k)
+       (resume (continuation%-k k) v)])))
+(define catch-lookup
+  (lambda (k tag kk)
+    (match k
+      [(bottom-cont% c f)
+       (error "No associated catch" k tag kk)]
+      [x #:when (labeled-cont%? x)
+         (if (eqv? tag (labeled-cont%-tag k))
+             (evaluate (throw-cont%-form kk)
+                       (throw-cont%-r kk)
+                       (throwing-cont% kk tag k))
+             (catch-lookup (continuation%-k k) tag kk))]
+      [(continuation% c)
+       (catch-lookup c tag kk)]
+      [else (error "Not a continuation" k tag kk)])))
 (define lookup
   (lambda (r n k)
     (cond
@@ -112,6 +138,10 @@
 (struct apply-cont% continuation% (f r) #:transparent)
 (struct argument-cont% continuation% (e* r) #:transparent)
 (struct gather-cont% continuation% (v) #:transparent)
+(struct catch-cont% continuation% (body r) #:transparent)
+(struct labeled-cont% continuation% (tag) #:transparent)
+(struct throw-cont% continuation% (form r) #:transparent)
+(struct throwing-cont% continuation% (tag cont) #:transparent)
 
 ;; multiple functions for evaluate the different forms
 (define evaluate-quote
@@ -140,6 +170,11 @@
   (if (pair? e*)
       (evaluate (car e*) r (argument-cont% k e* r))
       (resume k '())))
+(define (evaluate-catch tag body r k)
+  (evaluate tag r (catch-cont% k body r)))
+(define (evaluate-throw tag form r k)
+  (evaluate tag r (throw-cont% k form r)))
+
 
 (define-syntax definitial
   (syntax-rules ()
@@ -162,6 +197,9 @@
 (defprimitive cons cons 2)
 (defprimitive car car 1)
 (defprimitive + + 2)
+(defprimitive - - 2)
+(defprimitive * * 2)
+(defprimitive = = 2)
 (definitial call/cc
   (primitive%
    'call/cc
@@ -193,3 +231,35 @@
            1
            (* n (f (- n 1)))))))
    5)
+#;
+(evaluate '(catch 2 (* 7 (catch 1 
+                           (* 3 (catch 2
+                                 (throw 1 (throw 2 5)))))))
+              r.init
+              (bottom-cont% 'void (lambda (x) (display x) (newline))))
+;; =>105
+#;
+(evaluate '(catch 2 (* 7 (throw 1 
+                           (throw 2
+                             3))))
+              r.init
+              (bottom-cont% 'void (lambda (x) (display x) (newline))))
+
+(evaluate '(catch 2 (* 7 (throw 2
+                                (begin 55 (+ 6 7)))))
+              r.init
+              (bottom-cont% 'void (lambda (x) (display x) (newline))))
+#;
+(evaluate '((catch 2 (lambda (x)
+                      (* x (throw 2  ;; not work! No assosiated match.
+                                5))))
+            10)
+              r.init
+              (bottom-cont% 'void (lambda (x) (display x) (newline))))
+
+(evaluate '((catch 2 (lambda (x)
+                       (set! x 100)
+                       (+ x x)))
+            10)
+              r.init
+              (bottom-cont% 'void (lambda (x) (display x) (newline))))

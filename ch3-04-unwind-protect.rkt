@@ -12,6 +12,11 @@
         [(begin) (evaluate-begin (cdr e) r k)]
         [(set!) (evaluate-set! (cadr e) (caddr e) r k)]
         [(lambda) (evaluate-lambda (cadr e) (cddr e) r k)]
+        [(catch) (evaluate-catch (cadr e) (cddr e) r k)]
+        [(throw) (evaluate-throw (cadr e) (caddr e) r k)]
+        [(block) (evaluate-block (cadr e) (cddr e) r k)]
+        [(return-from) (evaluate-return-from (cadr e) (caddr e) r k)]
+        [(unwind-protect) (evaluate-unwind-protect (cadr e) (cddr e) r k)]
         [else (evaluate-application (car e) (cdr e) r k)])))
 (define invoke
   (lambda (f v* r k)
@@ -52,13 +57,84 @@
       [(gather-cont%? k)
        (resume (continuation%-k k)
                (cons (gather-cont%-v k) v))]
+      [(catch-cont%? k)
+       (evaluate-begin (catch-cont%-body k)
+                       (catch-cont%-r k)
+                       (labeled-cont% (continuation%-k k) v))]
+      [(throwing-cont%? k)           ;** Modified **
+       (match k
+         [(throwing-cont% oldk tag newcont)
+          (unwind oldk v newcont)])]
       [(apply-cont%? k)
        (invoke (apply-cont%-f k)
                v
                (apply-cont%-r k)
                (continuation%-k k))]
       [(bottom-cont%? k)
-       ((bottom-cont%-f k) v)])))
+       ((bottom-cont%-f k) v)]
+      [(throw-cont%? k)
+       (catch-lookup k v k)]
+      [(labeled-cont%? k)
+       (resume (continuation%-k k) v)]
+      [(block-cont%? k)
+       (resume (continuation%-k k) v)]
+      [(return-from-cont%? k)
+       (block-lookup (return-from-cont%-r k)
+                     (return-from-cont%-label k)
+                     (continuation%-k k)
+                     v)]
+      [(unwind-protect-cont%? k)
+       (evaluate-begin (unwind-protect-cont%-cleanup k)
+                       (unwind-protect-cont%-r k)
+                       (protect-return-cont%
+                        (continuation%-k k) v))]
+      [(protect-return-cont%? k)
+       (match k
+         [(protect-return-cont% cont v)
+          (resume cont v)])]
+      [(unwind-cont%? k)
+       (match k
+         [(unwind-cont% cont value target)
+          (unwind cont value target)])])))
+(define block-lookup
+  (lambda (r label k v)
+    (match r
+      [(block-env% others name cont)  ;; **Modified** for unwind-protect
+       (if (eq? label name)
+           (unwind k v cont)
+           (block-lookup others label k v))]
+      [(full-env% others name)   
+       (block-lookup others label k v)]
+      [(null-env%)
+       (error "Unkown block label" label r k v)]
+      [else (error "Not an environment" r label k v)])))
+(define unwind
+  (lambda (k v ktarget)
+    (cond
+      [(bottom-cont%? k)
+       (error "Obsolete continuation" v)]
+      [(unwind-protect-cont%? k)
+       (match k
+         [(unwind-protect-cont% cont cleanup r)
+          (evaluate-begin cleanup r
+                          (unwind-cont% cont v ktarget))])]
+      [else (if (eq? k ktarget) 
+                (resume k v)
+                (unwind (continuation%-k k) v ktarget))])))
+(define catch-lookup
+  (lambda (k tag kk)
+    (match k
+      [(bottom-cont% c f)
+       (error "No associated catch" k tag kk)]
+      [x #:when (labeled-cont%? x)
+         (if (eqv? tag (labeled-cont%-tag k))
+             (evaluate (throw-cont%-form kk)
+                       (throw-cont%-r kk)
+                       (throwing-cont% kk tag k))
+             (catch-lookup (continuation%-k k) tag kk))]
+      [(continuation% c)
+       (catch-lookup c tag kk)]
+      [else (error "Not a continuation" k tag kk)])))
 (define lookup
   (lambda (r n k)
     (cond
@@ -68,6 +144,8 @@
        (if (eqv? n (full-env%-name r))
            (resume k (variable-env%-value r))
            (lookup (full-env%-others r) n k))]
+      [(block-env%? r)
+       (lookup (full-env%-others r) n k)]
       [(full-env%? r)        ;; if this clause come first, it would be wrong.
        (lookup (full-env%-others r) n k)])))
 (define update!
@@ -102,6 +180,7 @@
 (struct null-env% environment% () #:transparent)
 (struct full-env% environment% (others name) #:transparent)
 (struct variable-env% full-env% ((value #:mutable)) #:transparent)
+(struct block-env% full-env% (cont) #:transparent)
 
 (struct continuation% (k) #:transparent)
 (struct bottom-cont% continuation% (f) #:transparent)
@@ -112,6 +191,16 @@
 (struct apply-cont% continuation% (f r) #:transparent)
 (struct argument-cont% continuation% (e* r) #:transparent)
 (struct gather-cont% continuation% (v) #:transparent)
+(struct catch-cont% continuation% (body r) #:transparent)
+(struct labeled-cont% continuation% (tag) #:transparent)
+(struct throw-cont% continuation% (form r) #:transparent)
+(struct throwing-cont% continuation% (tag cont) #:transparent)
+(struct block-cont% continuation% (label) #:transparent)
+(struct return-from-cont% continuation% (r label) #:transparent)
+(struct unwind-protect-cont% continuation% (cleanup r) #:transparent)
+(struct protect-return-cont% continuation% (value) #:transparent)
+(struct unwind-cont% continuation% (value target))
+
 
 ;; multiple functions for evaluate the different forms
 (define evaluate-quote
@@ -140,6 +229,22 @@
   (if (pair? e*)
       (evaluate (car e*) r (argument-cont% k e* r))
       (resume k '())))
+(define (evaluate-catch tag body r k)
+  (evaluate tag r (catch-cont% k body r)))
+(define (evaluate-throw tag form r k)
+  (evaluate tag r (throw-cont% k form r)))
+(define (evaluate-block label body r k)
+  (let ([k (block-cont% k label)])
+    (evaluate-begin body
+                    (block-env% r label k)
+                    k)))
+(define (evaluate-return-from label form r k)
+  (evaluate form r (return-from-cont% k r label)))
+(define (evaluate-unwind-protect form cleanup r k)
+  (evaluate form
+            r
+            (unwind-protect-cont% k cleanup r)))
+
 
 (define-syntax definitial
   (syntax-rules ()
@@ -162,6 +267,9 @@
 (defprimitive cons cons 2)
 (defprimitive car car 1)
 (defprimitive + + 2)
+(defprimitive - - 2)
+(defprimitive * * 2)
+(defprimitive = = 2)
 (definitial call/cc
   (primitive%
    'call/cc
@@ -182,14 +290,13 @@
   (toplevel))
 
 ;; test
-#;
-(((lambda (f)
-    ((lambda (mk) (mk mk))
-     (lambda (mk)
-       (f (lambda (x) ((mk mk) x))))))
-   (lambda (f)
-     (lambda (n)
-       (if (= n 0)
-           1
-           (* n (f (- n 1)))))))
-   5)
+(evaluate '((lambda (x)
+              (catch 1
+                (catch 2
+                  (unwind-protect (+ x x)
+                                  (begin (set! x 49) (throw 2 0))))
+                (+ x x)))
+            100)
+              r.init
+              (bottom-cont% 'void (lambda (x) (display x) (newline))))
+;=> 98

@@ -88,16 +88,28 @@
 ;;; Meroonet restricts the total number of possible different classes.
 ;;; Moreover this number cannot be dynamically modified.
 #lang racket
-(require compatibility/defmacro)
-
+(#%require compatibility/defmacro mzlib/compat
+  (for-syntax compatibility/defmacro))
+#;
 (define-macro (define-meroonet-macro call . body) 
   (lambda (call . body)
-    `(define-macro ,call . ,body) ) )
-
-;;; Test: (expand-defmacro '(define-meroon-macro (f a) (g b)))
-(define meroonet-error error)
-
-		
+    `(define-macro ,call . ,body) ))
+#;
+(define-macro (define-meroonet-macro call . body)
+  (define (meroonet-make-expander call body x)
+    `(begin
+       ;; define the Dybvig expander as a regular function:
+       (putprop ',(car call) 'expander
+         (lambda (,x)
+           ;; x receives a syntax-object and not a form
+           (define (strip x) (vector-ref x 1))
+           ;; Don't check arity, apply directly
+           (apply (lambda ,(cdr call) . ,body)
+                  (cdr (strip ,x)) ) ) )
+       ;; register the Dybvig macro at load-time:
+       (expand-syntax
+        #'(define-syntax ,(car call) (getprop ',(car call) 'expander)) ) ) )
+  (meroonet-make-expander call body (gensym)) )		
 (define gensym						
   (let ((counter 99))					
     (lambda () 						
@@ -112,7 +124,9 @@
           (error-escape-handler 'list-tail) )			
       l ) )						
 						
-(define the-Point 'wait)				
+(define the-Point 'wait)	
+
+(define meroonet-error error)
 
 
 
