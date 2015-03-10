@@ -1,7 +1,8 @@
 #lang racket
+
 (require mzlib/compat) ;; to use atom? and getprop
 (require compatibility/mlist)
-
+(provide (all-defined-out))
 (define (evaluate e r k)
   (if (atom? e)
       (cond [(symbol? e) (evaluate-variable e r k)]
